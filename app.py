@@ -53,6 +53,7 @@ def ask_llm(prompt):
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
 
+    os.makedirs("uploads", exist_ok=True)
     upload_path = f"uploads/{file.filename}"
 
     with open(upload_path, "wb") as buffer:
