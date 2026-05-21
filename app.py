@@ -69,6 +69,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 # chunking text
     chunks = create_chunks(extracted_text)
 #embedding
+    embedding_model = get_embedding_model()
     embeddings = embedding_model.encode(chunks)
 
     for index, chunk in enumerate(chunks):
@@ -87,6 +88,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 async def ask_question(question: str):
 
 ## retrieval
+    embedding_model = get_embedding_model()
     question_embedding = embedding_model.encode(question)
     results = collection.query(
         query_embeddings = [question_embedding.tolist()],
@@ -114,9 +116,15 @@ async def ask_question(question: str):
     "answer": ai_response
 }
 
-embedding_model = SentenceTransformer(
-    'paraphrase-MiniLM-L3-v2'
-)
+# embedding_model = SentenceTransformer(
+#     'paraphrase-MiniLM-L3-v2'
+# )
+
+def get_embedding_model():
+
+    return SentenceTransformer(
+        'paraphrase-MiniLM-L3-v2'
+    )
 
 chroma_client = chromadb.PersistentClient(
     path="chroma_db"
