@@ -115,7 +115,7 @@ async def ask_question(question: str):
 }
 
 embedding_model = SentenceTransformer(
-    'all-MiniLM-L6-v2'
+    'paraphrase-MiniLM-L3-v2'
 )
 
 chroma_client = chromadb.PersistentClient(
