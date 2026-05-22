@@ -1,26 +1,34 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 import chromadb
-import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
 
-
+# Load environment variables
 load_dotenv()
+
+# Configure Gemini
 genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
 model = genai.GenerativeModel(
-    "gemini-3.1-flash-lite"
+    "gemini-2.5-flash"
 )
 
+# Load embedding model ONLY ONCE
+embedding_model = SentenceTransformer(
+    'paraphrase-MiniLM-L3-v2'
+)
+
+# FastAPI app
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,18 +37,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ChromaDB
+chroma_client = chromadb.PersistentClient(
+    path="chroma_db"
+)
+
+collection = chroma_client.get_or_create_collection(
+    name="pdf_chunks"
+)
+
+# Health check
+@app.get("/")
+def health():
+    return {
+        "status": "running"
+    }
+
+# Utility functions
+def get_embedding_model():
+    return embedding_model
+
 def create_chunks(text, chunk_size=500):
     chunks = []
+
     for i in range(0, len(text), chunk_size):
-        chunk = text[i:i+chunk_size]
+        chunk = text[i:i + chunk_size]
         chunks.append(chunk)
 
     return chunks
 
 def clean_text(text):
     text = text.replace("\n", " ")
-
-    text = text .replace("\t", " ")
+    text = text.replace("\t", " ")
 
     return text
 
@@ -50,87 +78,143 @@ def ask_llm(prompt):
 
     return response.text
 
+# Upload API
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
 
-    os.makedirs("uploads", exist_ok=True)
-    upload_path = f"uploads/{file.filename}"
+    try:
+        os.makedirs("uploads", exist_ok=True)
 
-    with open(upload_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-# extracted_text
-    reader = PdfReader(upload_path)
-    extracted_text = ""
+        upload_path = f"uploads/{file.filename}"
 
-    for page in reader.pages:
-        extracted_text+=page.extract_text()
+        # Save uploaded PDF
+        with open(upload_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-# cleaning text
-    extracted_text = clean_text(extracted_text)
-# chunking text
-    chunks = create_chunks(extracted_text)
-#embedding
-    embedding_model = get_embedding_model()
-    embeddings = embedding_model.encode(chunks)
+        # Read PDF
+        reader = PdfReader(upload_path)
 
-    for index, chunk in enumerate(chunks):
-        collection.add(
-            ids = [str(index)],
-            documents = [chunk],
-            embeddings = [embeddings[index].tolist()]
+        extracted_text = ""
+
+        for page in reader.pages:
+
+            text = page.extract_text()
+
+            if text:
+                extracted_text += text
+
+        # Clean text
+        extracted_text = clean_text(extracted_text)
+
+        # Validate extracted text
+        if not extracted_text.strip():
+
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract text from PDF"
+            )
+
+        # Chunking
+        chunks = create_chunks(extracted_text)
+
+        # Embeddings
+        embedding_model = get_embedding_model()
+
+        embeddings = embedding_model.encode(chunks)
+
+        # Store in ChromaDB
+        for index, chunk in enumerate(chunks):
+
+            collection.add(
+                ids=[f"{file.filename}_{index}"],
+                documents=[chunk],
+                embeddings=[embeddings[index].tolist()]
+            )
+
+        return {
+            "message": "Embeddings stored successfully",
+            "total_chunks": len(chunks)
+        }
+
+    except HTTPException as http_error:
+        print("UPLOAD HTTP ERROR:", str(http_error.detail))
+        raise http_error
+
+    except Exception as e:
+        print("UPLOAD ERROR:", str(e))
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload Error: {str(e)}"
         )
 
-    return {
-    "message": "Embeddings stored successfully",
-    "total_chunks": len(chunks)
-    }
-
+# Ask API
 @app.post("/ask")
 async def ask_question(question: str):
 
-## retrieval
-    embedding_model = get_embedding_model()
-    question_embedding = embedding_model.encode(question)
-    results = collection.query(
-        query_embeddings = [question_embedding.tolist()],
-        n_results = 3
-    )
+    try:
+        print("Received question:", question)
 
-    retrieved_chunks  = results['documents'][0]
+        embedding_model = get_embedding_model()
 
-    context = "".join(retrieved_chunks)
+        # Generate question embedding
+        question_embedding = embedding_model.encode(question)
 
-    prompt = f""" 
-    Answer the question based on the context below.
+        print("Question embedding generated")
 
-    Context: 
-    {context}
+        # Query ChromaDB
+        results = collection.query(
+            query_embeddings=[question_embedding.tolist()],
+            n_results=3
+        )
 
-    Question:
-    {question}
-    """
-    # generation
-    ai_response = ask_llm(prompt)
+        print("Chroma query successful")
 
-    return {
-    "question": question,
-    "answer": ai_response
-}
+        retrieved_chunks = results['documents'][0]
 
-# embedding_model = SentenceTransformer(
-#     'paraphrase-MiniLM-L3-v2'
-# )
+        if not retrieved_chunks:
 
-def get_embedding_model():
+            raise HTTPException(
+                status_code=404,
+                detail="No relevant chunks found"
+            )
 
-    return SentenceTransformer(
-        'paraphrase-MiniLM-L3-v2'
-    )
+        # Create context
+        context = " ".join(retrieved_chunks)
 
-chroma_client = chromadb.PersistentClient(
-    path="chroma_db"
-)
+        print("Context length:", len(context))
 
-collection = chroma_client.get_or_create_collection(
-    name = "pdf_chunks"
-)
+        # Prompt
+        prompt = f"""
+        Answer the question based on the context below.
+
+        Context:
+        {context}
+
+        Question:
+        {question}
+        """
+
+        print("Calling Gemini API...")
+
+        # LLM response
+        ai_response = ask_llm(prompt)
+
+        print("Gemini response received")
+
+        return {
+            "question": question,
+            "answer": ai_response
+        }
+
+    except HTTPException as http_error:
+        print("HTTP ERROR:", str(http_error.detail))
+        raise http_error
+
+    except Exception as e:
+        print("ASK API ERROR:", str(e))
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal Server Error: {str(e)}"
+        )
