@@ -7,6 +7,7 @@ import chromadb
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
+from linkedin_service import search_linkedin_profiles
 
 # Load environment variables
 load_dotenv()
@@ -217,4 +218,19 @@ async def ask_question(question: str):
         raise HTTPException(
             status_code=500,
             detail=f"Internal Server Error: {str(e)}"
+        )
+
+
+@app.get('/linkedin-search')
+async def linkedin_search(name: str):
+    try:
+        results = search_linkedin_profiles(name)
+        return {
+            "results": results
+        }
+    except Exception as e:
+        print("LINKEDIN SEARCH ERROR:", str(e))
+        raise HTTPException(
+            status_code = 500,
+            detail = str(e)
         )
