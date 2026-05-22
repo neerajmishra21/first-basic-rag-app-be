@@ -4,7 +4,7 @@ import shutil
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 import chromadb
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 import os
 
@@ -12,16 +12,12 @@ import os
 load_dotenv()
 
 # Configure Gemini
-# genai.configure(
-#     api_key=os.getenv("GEMINI_API_KEY")
-# )
-
-# model = genai.GenerativeModel(
-#     "gemini-2.5-flash"
-# )
-
-client = genai.Client(
+genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
+)
+
+model = genai.GenerativeModel(
+    "gemini-2.5-flash"
 )
 
 # Load embedding model ONLY ONCE
@@ -78,11 +74,7 @@ def clean_text(text):
 
 def ask_llm(prompt):
 
-    # response = model.generate_content(prompt)
-    response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=prompt
-    )
+    response = model.generate_content(prompt)
 
     return response.text
 
